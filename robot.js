@@ -11,7 +11,8 @@ const bounds = {
 const maxLife = 100;
 const maxSpeed = 100;
 const maxMissileRange = 700;
-const distanceFromBorderToStop = 180;
+const distanceFromBorderToStop = 320;
+const speedToStartAttacking = 50;
 
 const getTankState = async tank => {
   const x = await tank.getX();
@@ -35,7 +36,7 @@ const angles = {
   "bottom-right": 330 //315
 };
 
-const getPositionsToCheck = (x, y) => {
+const getInitialPositionsToCheck = (x, y) => {
   if (x < bounds.x / 2) {
     if (y === bounds.y / 2) {
       return ["top-right", "bottom-right", "right"];
@@ -53,7 +54,7 @@ const getPositionsToCheck = (x, y) => {
 };
 
 const getAnglesToCheck = (x, y) =>
-  getPositionsToCheck(x, y).map(position => angles[position]);
+  getInitialPositionsToCheck(x, y).map(position => angles[position]);
 
 const initialLogic = async tank => {
   const lastState = state.current;
@@ -115,44 +116,127 @@ const directions = clockwise =>
     ? ["top", "right", "bottom", "left"]
     : ["top", "left", "bottom", "right"];
 
-const coreLogic = async tank => {
-  const lastState = state.current;
-  const nearestBorder = getNearestBorder(lastState.x, lastState.y);
-  let clockwise = false;
+const doNotCollideLogic = async (tank, { angle, nextDirection }) => {
+  const { x, y } = state.current;
+  if (nextDirection === "top") {
+    if (y > bounds.y - distanceFromBorderToStop) {
+      await tank.drive(angle, 0);
+    }
+  }
+  if (nextDirection === "right") {
+    if (x > bounds.x - distanceFromBorderToStop) {
+      await tank.drive(angle, 0);
+    }
+  }
+  if (nextDirection === "bottom") {
+    if (y < distanceFromBorderToStop) {
+      await tank.drive(angle, 0);
+    }
+  }
+  if (nextDirection === "left") {
+    if (x < distanceFromBorderToStop) {
+      await tank.drive(angle, 0);
+    }
+  }
+};
+
+const clockwise = true;
+
+const initialMoveArroundLogic = async tank => {
+  const { x, y } = state.current;
+  const nearestBorder = getNearestBorder(x, y);
   const nearestBorderIndex = directions(clockwise).indexOf(nearestBorder);
-  let nextDirectionIndex = nearestBorderIndex;
-  let nextDirection = directions(clockwise)[nextDirectionIndex];
-  let angle = angles[nextDirection];
-  let continueWhile = true;
-  while (continueWhile) {
+  const nextDirectionIndex = nearestBorderIndex;
+  const nextDirection = directions(clockwise)[nextDirectionIndex];
+  const angle = angles[nextDirection];
+  return { angle, nextDirection, nextDirectionIndex };
+};
+
+const getNextDirectionIndex = index => {
+  return (index + 1) % directions(clockwise).length;
+};
+
+const moveArroundLogic = async (
+  tank,
+  { nextDirectionIndex, nextDirection, angle }
+) => {
+  const { x, y, speed } = state.current;
+  if (speed === 0) {
+    nextDirectionIndex = getNextDirectionIndex(nextDirectionIndex);
+    nextDirection = directions(clockwise)[nextDirectionIndex];
+    angle = angles[nextDirection];
+    await tank.drive(angle, 100);
+  }
+  return { nextDirectionIndex, nextDirection, angle };
+};
+
+const getCenterPositionsToCheck = centerDirection => {
+  switch (centerDirection) {
+    case "top":
+      return ["top-left", "top", "top-right"];
+    case "right":
+      return ["top-right", "right", "bottom-right"];
+    case "bottom":
+      return ["bottom-left", "bottom", "bottom-right"];
+    case "left":
+      return ["top-left", "left", "bottom-left"];
+  }
+};
+
+const getOppositePositionToCheck = nextDirection => {
+  switch (nextDirection) {
+    case "top":
+      return "bottom";
+    case "right":
+      return "left";
+    case "bottom":
+      return "top";
+    case "left":
+      return "right";
+  }
+};
+
+const scanAttack = async (tank, scan, angle) => {
+  const angleInRadians = (angle * Math.PI) / 180;
+  const lastState = state.current;
+  const x = Math.round(lastState.x + scan * Math.cos(angleInRadians));
+  const y = Math.round(lastState.y + scan * Math.sin(angleInRadians));
+  state.opponent.push({ x, y });
+  await tank.shoot(angle, scan);
+};
+
+const scanCenterLogic = async (
+  tank,
+  { angle, nextDirection, nextDirectionIndex }
+) => {
+  const centerDirectionIndex = getNextDirectionIndex(nextDirectionIndex);
+  const centerDirection = directions(clockwise)[centerDirectionIndex];
+  const positionsToCheck = [
+    ...getCenterPositionsToCheck(centerDirection),
+    getOppositePositionToCheck(nextDirection)
+  ];
+
+  const sameDirectionAngle = angles[nextDirection];
+  const sameDirectionScan = await tank.scan(sameDirectionAngle, 10);
+  if (sameDirectionScan) {
+    await scanAttack(tank, sameDirectionScan, sameDirectionAngle);
+  }
+
+  for (const position of positionsToCheck) {
+    const angle = angles[position];
+    const scan = await tank.scan(angle, 10);
+    if (scan) await scanAttack(tank, scan, angle);
+  }
+};
+
+const coreLogic = async tank => {
+  let moveArroundState = await initialMoveArroundLogic(tank);
+  while (true) {
     await getTankState(tank);
-    const { x, y, speed } = state.current;
-    if (state.current.speed === 0) {
-      nextDirectionIndex =
-        (nextDirectionIndex + 1) % directions(clockwise).length;
-      nextDirection = directions(clockwise)[nextDirectionIndex];
-      angle = angles[nextDirection];
-      await tank.drive(angle, 100);
-    }
-    if (nextDirection === "top") {
-      if (y > bounds.y - distanceFromBorderToStop) {
-        await tank.drive(angle, 0);
-      }
-    }
-    if (nextDirection === "right") {
-      if (x > bounds.x - distanceFromBorderToStop) {
-        await tank.drive(angle, 0);
-      }
-    }
-    if (nextDirection === "bottom") {
-      if (y < distanceFromBorderToStop) {
-        await tank.drive(angle, 0);
-      }
-    }
-    if (nextDirection === "left") {
-      if (x < distanceFromBorderToStop) {
-        await tank.drive(angle, 0);
-      }
+    moveArroundState = await moveArroundLogic(tank, moveArroundState);
+    await doNotCollideLogic(tank, moveArroundState);
+    if (state.current.speed > speedToStartAttacking) {
+      await scanCenterLogic(tank, moveArroundState);
     }
   }
 };
@@ -199,10 +283,5 @@ async function main(tank) {
   await getTankState(tank);
   await initialLogic(tank);
   await scapeLogic(tank);
-  //while (true) {
-  //setInterval(async () => {
   await coreLogic(tank);
-  console.log(state);
-  //}, 1000);
-  //}
 }
